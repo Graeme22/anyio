@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from typing import Any, NoReturn
@@ -12,6 +13,7 @@ from anyio import (
     create_task_group,
     fail_after,
     get_cancelled_exc_class,
+    sleep,
     wait_all_tasks_blocked,
 )
 from anyio.functools import (
@@ -59,7 +61,7 @@ class TestAsyncLRUCache:
             lru_cache(10)  # type: ignore[call-overload]
 
     def test_cache_parameters(self) -> None:
-        @lru_cache(maxsize=10, typed=True)
+        @lru_cache(maxsize=10, typed=True, ttl=3)
         async def func(x: int) -> int:
             return x
 
@@ -67,6 +69,7 @@ class TestAsyncLRUCache:
             "maxsize": 10,
             "typed": True,
             "always_checkpoint": False,
+            "ttl": 3,
         }
 
     def test_wrap_sync_callable(self) -> None:
@@ -110,14 +113,14 @@ class TestAsyncLRUCache:
             assert await func(2) == 2
 
         statistics = func.cache_info()
-        assert statistics == (3, 2, 128, 2)
+        assert statistics == (3, 2, 128, 2, None)
         assert statistics.hits == 3
         assert statistics.misses == 2
         assert statistics.maxsize == 128
         assert statistics.currsize == 2
 
         func.cache_clear()
-        assert func.cache_info() == (0, 0, 128, 0)
+        assert func.cache_info() == (0, 0, 128, 0, None)
 
     async def test_untyped_caching(self) -> None:
         @lru_cache
@@ -280,6 +283,7 @@ class TestAsyncLRUCache:
             "always_checkpoint": False,
             "maxsize": 128,
             "typed": False,
+            "ttl": None,
         }
         statistics = wrapper.cache_info()
         assert statistics.hits == 2
@@ -328,6 +332,39 @@ class TestAsyncLRUCache:
             assert await foo.instance_method(2) == 2
 
         await self._do_cache_asserts(Foo().instance_method)
+
+    async def test_ttl_cache_hit(self) -> None:
+        @lru_cache(ttl=1)
+        async def func() -> float:
+            return random.random()
+
+        cached_val = await func()
+        # Should be a cache hit
+        assert await func() == cached_val
+
+        statistics = func.cache_info()
+        assert statistics.hits == 1
+        assert statistics.misses == 1
+        assert statistics.currsize == 1
+        assert statistics.ttl == 1
+
+    async def test_ttl_expiration_evicts(self) -> None:
+        @lru_cache(ttl=1)
+        async def func() -> float:
+            return random.random()
+
+        cached_val = await func()
+        # Should be a hit
+        assert await func() == cached_val
+        await sleep(1)
+        # Should be a miss now
+        assert await func() != cached_val
+
+        statistics = func.cache_info()
+        assert statistics.hits == 1
+        assert statistics.misses == 2
+        assert statistics.currsize == 1
+        assert statistics.ttl == 1
 
 
 class TestReduce:
